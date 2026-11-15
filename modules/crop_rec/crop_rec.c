@@ -69,7 +69,7 @@ static CONFIG_INT("crop.isoauto", isoauto, 0);
 static CONFIG_INT("crop.gain_buttons", gain_buttons, 3);
 static CONFIG_INT("crop.presets", presets, 0);
 static CONFIG_INT("crop.previews", previews, 2);
-static CONFIG_INT("crop.tapdisp", tapdisp, 1);
+static CONFIG_INT("crop.tapdisp", tapdisp, 0);
 static CONFIG_INT("crop.set", set, 0);
 
 CONFIG_INT("crop.bitdepth", bitdepth, 0);
@@ -5219,7 +5219,7 @@ static struct menu_entry custom_buttons_menu[] =
                 .choices = CHOICES("OFF", "Tap display 01", "Tap display 02", "Tap display 03", "Tap display 04", "Tap display 05", "Tap display 06", "Tap display 07", "Tap display 08"),
                 .help   = "Tap display shortcuts",
                 .help2  = "passthrough\n"
-                "Tap display 01 = fast access to startoff dropdown list(default)\n"
+                "Tap display 01 = fast access to startoff dropdown list\n"
                 "Tap display 02 = toggle between Real-time/framing\n"
                 "Tap display 03 = Toggle Crop rec preview auto mode/Real time idle\n"
                 "Tap display 04 = toggle raw Zebras ON or OFF\n"
@@ -6848,7 +6848,7 @@ static int crop_rec_needs_lv_refresh()
             gain_buttons = 3;
             shutter_range = 0;
             previews = 2;
-            tapdisp = 1;
+            tapdisp = 0;
             set = 0;
             isoauto = 0;
             ratios = 3;
