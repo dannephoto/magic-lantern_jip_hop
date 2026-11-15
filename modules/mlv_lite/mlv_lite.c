@@ -4084,10 +4084,10 @@ static struct menu_entry raw_video_menu[] =
                 .name = "Rec preview",
                 .priv = &rec_preview_color,
                 .max = 1,
-                .choices = CHOICES("Fast gray", "Color"),
+                .choices = CHOICES("Gray (fastest)", "Color (more CPU)"),
                 .help  = "Look of the ML (Framing) preview while recording.",
-                .help2 = "Fast gray: low-res grayscale, lightest on the CPU (original).\n"
-                         "Color: half-res color; falls back to gray if buffers fill up.\n",
+                .help2 = "Gray: low-res grayscale, lightest on the CPU.\n"
+                         "Color: may drop frames at high data rates; gray when buffer fills.\n",
             },
             {
                 .name = "Kill global draw",

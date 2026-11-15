@@ -56,7 +56,7 @@ static CONFIG_INT("crop.ratios", ratios, 3);
 static CONFIG_INT("crop.x3crop", x3crop, 0);
 static CONFIG_INT("crop.flvtl", flvtl, 0);
 static CONFIG_INT("crop.flvtl4k", flvtl4k, 0);
-static CONFIG_INT("crop.zoomaid", zoomaid, 0);
+static CONFIG_INT("crop.zoomaid", zoomaid, 1);
 static CONFIG_INT("crop.x3toggle", x3toggle, 2);
 static CONFIG_INT("crop.set_25fps", set_25fps, 0);
 static CONFIG_INT("crop.framestop", framestop, 0);
@@ -66,7 +66,7 @@ static CONFIG_INT("crop.shutteraverage", shutteraverage, 0);
 static CONFIG_INT("crop.HDR_iso_a", HDR_iso_a, 0);
 static CONFIG_INT("crop.HDR_iso_b", HDR_iso_b, 0);
 static CONFIG_INT("crop.isoauto", isoauto, 0);
-static CONFIG_INT("crop.gain_buttons", gain_buttons, 1);
+static CONFIG_INT("crop.gain_buttons", gain_buttons, 3);
 static CONFIG_INT("crop.presets", presets, 0);
 static CONFIG_INT("crop.previews", previews, 2);
 static CONFIG_INT("crop.tapdisp", tapdisp, 1);
@@ -5790,37 +5790,34 @@ static struct menu_entry crop_rec_menu[] =
  * so run them in gain_task instead of the keypress CBR (GUI task) */
 enum { GAIN_ISO_UP = 1, GAIN_ISO_DOWN, GAIN_AP_UP, GAIN_AP_DOWN };
 static struct msg_queue * gain_mq;
+static int info_switch = 0;     /* INFO_switch / SET_switch: 0 = Up/Down ISO, 1 = aperture */
+
+static const char * gain_value(int iso)
+{
+    return iso ? lens_format_iso(lens_info.raw_iso) : lens_format_aperture(lens_info.raw_aperture);
+}
 
 static void gain_apply(uint32_t req)
 {
+    /* priv = -1: clamp at the ends instead of wrapping around or going to auto ISO */
     switch (req)
     {
         case GAIN_ISO_UP:
-            if (lens_info.raw_iso == 0x0) return;   /* auto ISO */
-            if (lens_info.raw_iso >= 0x78) return;
-            iso_toggle(0, 2);
-            NotifyBox(1000, "%s", lens_format_iso(lens_info.raw_iso));
-            return;
-
+            if (lens_info.raw_iso == 0x0 || lens_info.raw_iso >= 0x78) return;
+            iso_toggle((void*)-1, 2);
+            break;
         case GAIN_ISO_DOWN:
-            if (lens_info.raw_iso == 0x0) return;
-            if (lens_info.raw_iso <= 0x48) return;
-            iso_toggle(0, -2);
-            NotifyBox(1000, "%s", lens_format_iso(lens_info.raw_iso));
-            return;
-
+            if (lens_info.raw_iso == 0x0 || lens_info.raw_iso <= 0x48) return;
+            iso_toggle((void*)-1, -2);
+            break;
         case GAIN_AP_UP:
-            if (lens_info.raw_aperture == lens_info.raw_aperture_max) return;
-            aperture_toggle(0, lens_info.raw_aperture > 0x4a ? 1 : 2);
-            NotifyBox(1000, "%s", lens_format_aperture(lens_info.raw_aperture));
-            return;
-
+            aperture_toggle((void*)-1, lens_info.raw_aperture > 0x4a ? 1 : 2);
+            break;
         case GAIN_AP_DOWN:
-            if (lens_info.raw_aperture == lens_info.raw_aperture_min) return;
-            aperture_toggle(0, lens_info.raw_aperture < 0x30 ? -1 : -2);
-            NotifyBox(1000, "%s", lens_format_aperture(lens_info.raw_aperture));
-            return;
+            aperture_toggle((void*)-1, lens_info.raw_aperture < 0x30 ? -1 : -2);
+            break;
     }
+    NotifyBox(1000, "%s", gain_value(req <= GAIN_ISO_DOWN));
 }
 
 static void gain_task()
@@ -5835,8 +5832,50 @@ static void gain_task()
     }
 }
 
+/* answer the press right away; gain_task shows the confirmed value afterwards */
 static int gain_request(uint32_t req)
 {
+    int iso = (req == GAIN_ISO_UP || req == GAIN_ISO_DOWN);
+    int up  = (req == GAIN_ISO_UP || req == GAIN_AP_UP);
+
+    if (iso && lens_info.raw_iso == 0x0)
+    {
+        NotifyBox(2000, "ISO Auto: set a manual ISO in Expo");
+        return 0;
+    }
+
+    /* ISO: request the next full stop and return, like Canon's own controls,
+     * instead of waiting for the confirm. Expo override sets ISO via BV, so it
+     * still goes through iso_toggle in gain_task. */
+    if (iso && !expo_override_active())
+    {
+        static int target, target_ms;
+        int base = (target && get_ms_clock() - target_ms < 500) ? target : lens_info.raw_iso;
+        int next = COERCE(base + (up ? 8 : -8), 0x48, 0x78);
+        if (next == base)
+        {
+            NotifyBox(1000, "%s %s", lens_format_iso(base), up ? "max" : "min");
+            return 0;
+        }
+        target = next;
+        target_ms = get_ms_clock();
+        prop_request_change(PROP_ISO, &target, 4);
+        NotifyBox(1000, "%s", lens_format_iso(target));
+        return 0;
+    }
+
+    int at_limit = iso
+        ? (up ? lens_info.raw_iso >= 0x78 : lens_info.raw_iso <= 0x48)
+        : (up ? lens_info.raw_aperture >= lens_info.raw_aperture_max
+              : lens_info.raw_aperture <= lens_info.raw_aperture_min);
+
+    if (at_limit)
+    {
+        NotifyBox(1000, "%s %s", gain_value(iso), up ? "max" : "min");
+        return 0;
+    }
+
+    NotifyBox(1000, "%s %s", gain_value(iso), up ? "+" : "-");
     msg_queue_post(gain_mq, req);
     return 0;
 }
@@ -6461,29 +6500,18 @@ if (get_halfshutter_pressed() && CROP_PRESET_MENU == CROP_PRESET_Anamorphic_EOSM
         return 0;
     }
 
-    static int info_switch = 0;
     static int info_switch_off = 0;
     if ((key == MODULE_KEY_INFO || key == MODULE_KEY_PRESS_SET) && lv && !gui_menu_shown() && is_movie_mode() && (gain_buttons == 3 || gain_buttons == 4))
     {
-        msleep(100);
         if(lv_disp_mode != 0){
             // Use INFO key to cycle LV as normal when not in the LV with ML overlays
             return 1;
         }
 
         info_switch_off = 1;
-        if (info_switch)
-        {
-            info_switch = 0;
-            NotifyBox(1000, "ISO");
-            return 0;
-        }
-        if (!info_switch)
-        {
-            info_switch = 1;
-            NotifyBox(1000, "aperture");
-            return 0;
-        }
+        info_switch = !info_switch;
+        NotifyBox(1000, info_switch ? "Up/Down: aperture" : "Up/Down: ISO");
+        return 0;
     }
 
     if (info_switch_off && (gain_buttons != 3 && gain_buttons != 4))
@@ -6816,8 +6844,8 @@ static int crop_rec_needs_lv_refresh()
             bitdepth = 0x0;
             x3crop = 0x0;
             x3toggle = 0x2;
-            zoomaid = 0x0;
-            gain_buttons = 1;
+            zoomaid = 0x1;
+            gain_buttons = 3;
             shutter_range = 0;
             previews = 2;
             tapdisp = 1;
@@ -7820,7 +7848,22 @@ LVINFO_UPDATE_FUNC(mode_update)
     if (OUTPUT_12BIT) snprintf(buffer, sizeof(buffer), "12bit");
 }
 
+/* which value Up/Down change in INFO_switch / SET_switch mode */
+static LVINFO_UPDATE_FUNC(gain_mode_update)
+{
+    LVINFO_BUFFER(8);
+    if (gain_buttons != 3 && gain_buttons != 4) return;
+    snprintf(buffer, sizeof(buffer), info_switch ? "[Av]" : "[ISO]");
+}
+
 static struct lvinfo_item info_items[] = {
+    {
+        .name = "Up/Down mode",
+        .which_bar = LV_BOTTOM_BAR_ONLY,
+        .update = gain_mode_update,
+        .preferred_position = -60,
+        .priority = 1,
+    },
     {
         .name = "Crop info",
         .which_bar = LV_BOTTOM_BAR_ONLY,
