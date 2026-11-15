@@ -160,6 +160,7 @@ static CONFIG_INT("raw.movie_restart", movie_restart, 0);
 CONFIG_INT("raw.CropRecPreview", prevmode, 1);
 
 CONFIG_INT("raw.preview", preview_mode, 1);
+static CONFIG_INT("raw.rec_preview_color", rec_preview_color, 0);
 #define PREVIEW_AUTO   (preview_mode == 0)
 #define PREVIEW_CANON  (preview_mode == 1)
 #define PREVIEW_ML     (preview_mode == 2)
@@ -4080,6 +4081,15 @@ static struct menu_entry raw_video_menu[] =
                          "Framing/recording, Real time when in idle, crop modes\n",
             },
             {
+                .name = "Rec preview",
+                .priv = &rec_preview_color,
+                .max = 1,
+                .choices = CHOICES("Fast gray", "Color"),
+                .help  = "Look of the ML (Framing) preview while recording.",
+                .help2 = "Fast gray: low-res grayscale, lightest on the CPU (original).\n"
+                         "Color: half-res color; falls back to gray if buffers fill up.\n",
+            },
+            {
                 .name = "Kill global draw",
                 .priv = &kill_gd,
                 .max = 1,
@@ -4619,7 +4629,7 @@ unsigned int raw_rec_update_preview(unsigned int ctx)
         -1,
         (need_for_speed) 
 	? RAW_PREVIEW_GRAY_ULTRA_FAST
-	: (RAW_IS_RECORDING && rec_trigger != 3) || (rec_trigger == 3 && get_halfshutter_pressed()) ? RAW_PREVIEW_GRAY_ULTRA_FAST /* 1x3 binning mode test */
+	: (RAW_IS_RECORDING && rec_trigger != 3 && !rec_preview_color) || (rec_trigger == 3 && get_halfshutter_pressed()) ? RAW_PREVIEW_GRAY_ULTRA_FAST /* 1x3 binning mode test */
     : RAW_PREVIEW_COLOR_HALFRES
     );
 
@@ -4748,6 +4758,7 @@ MODULE_CBRS_END()
 
 MODULE_CONFIGS_START()
     MODULE_CONFIG(kill_gd)
+    MODULE_CONFIG(rec_preview_color)
     MODULE_CONFIG(raw_video_enabled)
     MODULE_CONFIG(resolution_index_x)
     MODULE_CONFIG(res_x_fine)    

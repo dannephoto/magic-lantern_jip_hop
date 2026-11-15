@@ -5786,6 +5786,61 @@ static struct menu_entry crop_rec_menu[] =
     },
 };
 
+/* gain shortcuts: iso/aperture_toggle block while Canon confirms the change,
+ * so run them in gain_task instead of the keypress CBR (GUI task) */
+enum { GAIN_ISO_UP = 1, GAIN_ISO_DOWN, GAIN_AP_UP, GAIN_AP_DOWN };
+static struct msg_queue * gain_mq;
+
+static void gain_apply(uint32_t req)
+{
+    switch (req)
+    {
+        case GAIN_ISO_UP:
+            if (lens_info.raw_iso == 0x0) return;   /* auto ISO */
+            if (lens_info.raw_iso >= 0x78) return;
+            iso_toggle(0, 2);
+            NotifyBox(1000, "%s", lens_format_iso(lens_info.raw_iso));
+            return;
+
+        case GAIN_ISO_DOWN:
+            if (lens_info.raw_iso == 0x0) return;
+            if (lens_info.raw_iso <= 0x48) return;
+            iso_toggle(0, -2);
+            NotifyBox(1000, "%s", lens_format_iso(lens_info.raw_iso));
+            return;
+
+        case GAIN_AP_UP:
+            if (lens_info.raw_aperture == lens_info.raw_aperture_max) return;
+            aperture_toggle(0, lens_info.raw_aperture > 0x4a ? 1 : 2);
+            NotifyBox(1000, "%s", lens_format_aperture(lens_info.raw_aperture));
+            return;
+
+        case GAIN_AP_DOWN:
+            if (lens_info.raw_aperture == lens_info.raw_aperture_min) return;
+            aperture_toggle(0, lens_info.raw_aperture < 0x30 ? -1 : -2);
+            NotifyBox(1000, "%s", lens_format_aperture(lens_info.raw_aperture));
+            return;
+    }
+}
+
+static void gain_task()
+{
+    while (1)
+    {
+        uint32_t req;
+        if (msg_queue_receive(gain_mq, &req, 0) == 0)
+        {
+            gain_apply(req);
+        }
+    }
+}
+
+static int gain_request(uint32_t req)
+{
+    msg_queue_post(gain_mq, req);
+    return 0;
+}
+
 static unsigned int crop_rec_keypress_cbr(unsigned int key)
 {
     /* No longer needed while kill canon gui is enabled
@@ -6440,65 +6495,22 @@ if (get_halfshutter_pressed() && CROP_PRESET_MENU == CROP_PRESET_Anamorphic_EOSM
     
     if (key == MODULE_KEY_PRESS_DOWN && lv && !gui_menu_shown() && is_movie_mode() && (gain_buttons == 2 || info_switch))
     {
-        int a = lens_info.raw_aperture;
-        if (a == lens_info.raw_aperture_min) return 0;
-        if (lens_info.raw_aperture < 0x30)
-        {
-            aperture_toggle(0, -1);
-        }
-        else
-        {
-            aperture_toggle(0, -2);
-        }
-        return 0;
+        return gain_request(GAIN_AP_DOWN);
     }
 
     if (key == MODULE_KEY_PRESS_UP && lv && !gui_menu_shown() && is_movie_mode() && (gain_buttons == 2 || info_switch))
     {
-        int a = lens_info.raw_aperture;
-        if (a == lens_info.raw_aperture_max) return 0;
-        if (lens_info.raw_aperture > 0x4a)
-        {
-            aperture_toggle(0, 1);
-        }
-        else
-        {
-            aperture_toggle(0, 2);
-        }
-        return 0;
+        return gain_request(GAIN_AP_UP);
     }
 
         if (set != 8 && tapdisp != 8 && previews != 8 && key == MODULE_KEY_PRESS_UP && lv && !gui_menu_shown() && is_movie_mode() && (gain_buttons == 1 || (gain_buttons >= 3 && !info_switch)))
         {
-            
-            // Don't change ISO when set to auto ISO
-            if (lens_info.raw_iso == 0x0){
-                return 0;
-            }
-            
-            
-            int a = lens_info.raw_iso;
-            if (a == 0x78) return 0;
-
-                iso_toggle(0, 2);
-
-            return 0;
+            return gain_request(GAIN_ISO_UP);
         }
         
         if (set != 8 && tapdisp != 8 && previews != 8 && key == MODULE_KEY_PRESS_DOWN && lv && !gui_menu_shown() && is_movie_mode() && (gain_buttons == 1 || (gain_buttons >= 3 && !info_switch)))
         {
-            
-            // Don't change ISO when set to auto ISO
-            if (lens_info.raw_iso == 0x0){
-                return 0;
-            }
-            
-            int a = lens_info.raw_iso;
-            if (a == 0x48) return 0;
-
-                iso_toggle(0, -2);
-
-            return 0;
+            return gain_request(GAIN_ISO_DOWN);
         }
     
     
@@ -7963,6 +7975,8 @@ static unsigned int raw_info_update_cbr(unsigned int unused)
 
 static unsigned int crop_rec_init()
 {
+    gain_mq = (struct msg_queue *) msg_queue_create("crop_gain_mq", 8);
+    task_create("crop_gain_task", 0x1c, 0x1000, gain_task, 0);
 
     //let´s always start with focus boc in center
     center_lv_afframe();
