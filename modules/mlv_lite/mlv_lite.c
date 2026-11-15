@@ -3432,6 +3432,51 @@ void init_vsync_vars()
     skipped_frames = 0;
 }
 
+/* per-clip summary in ML/RECLOG.CSV, written after the clip is closed (no cost while recording) */
+static int rec_log_start_ms;
+static int rec_log_temp_start;
+static int rec_log_peak_used;           /* most slots in use at once */
+
+static int rec_log_temp()
+{
+    /* EOS M formula (platform/EOSM.202/consts.h); raw sensor value elsewhere */
+    return cam_eos_m ? MOD(efic_temp - 95, 256) * 40 / 100 - 22 : efic_temp;
+}
+
+static void rec_log_write(const char * stop_reason)
+{
+    const char * path = "ML/RECLOG.CSV";
+    int is_new = (FIO_GetFileSize_direct(path) == 0xFFFFFFFF);
+    FILE * log = FIO_CreateFileOrAppend(path);
+    if (!log) return;
+
+    if (is_new)
+    {
+        my_fprintf(log, "date,file,width,height,bits,fps,frames,skipped,seconds,MB,write_MBps,write_busy_pct,"
+                        "peak_buffer_pct,temp_start_C,temp_end_C,battery_bars,stop\n");
+    }
+
+    struct tm now;
+    LoadCalendarFromRTC(&now);
+    int seconds_x10 = (get_ms_clock() - rec_log_start_ms) / 100;
+    int mb_x10 = (int)(written_total * 10 / (1024 * 1024));
+    int speed_x100 = writing_time ? (int)(written_total * 100 / 1024 * 1000 / 1024 / writing_time) : 0;
+    int busy_pct = (writing_time + idle_time) ? writing_time * 100 / (writing_time + idle_time) : 0;
+    int fps = fps_get_current_x1000();
+    const char * name = raw_movie_filename ? raw_movie_filename : "";
+    const char * base = name;
+    for (const char * c = name; *c; c++) if (*c == '/') base = c + 1;
+
+    my_fprintf(log, "%04d-%02d-%02d %02d:%02d:%02d,%s,%d,%d,%d,%d.%03d,%d,%d,%d.%d,%d.%d,%d.%02d,%d,%d,%d,%d,%d,%s\n",
+        now.tm_year + 1900, now.tm_mon + 1, now.tm_mday, now.tm_hour, now.tm_min, now.tm_sec,
+        base, res_x, res_y, BPP, fps / 1000, fps % 1000,
+        frame_count, skipped_frames, seconds_x10 / 10, seconds_x10 % 10,
+        mb_x10 / 10, mb_x10 % 10, speed_x100 / 100, speed_x100 % 100, busy_pct,
+        valid_slot_count ? rec_log_peak_used * 100 / valid_slot_count : 0,
+        rec_log_temp_start, rec_log_temp(), battery_level_bars, stop_reason);
+    FIO_CloseFile(log);
+}
+
 static REQUIRES(RawRecTask) EXCLUDES(settings_sem)
 void raw_video_rec_task()
 {
@@ -3461,6 +3506,9 @@ void raw_video_rec_task()
     idle_time = 0;
     mlv_chunk = 0;
     buffer_full = 0;
+    rec_log_start_ms = get_ms_clock();
+    rec_log_temp_start = rec_log_temp();
+    rec_log_peak_used = 0;
 
     if (lv_dispsize == 10)
     {
@@ -3652,6 +3700,7 @@ void raw_video_rec_task()
         int num_frames = MOD(last_grouped - w_head + 1, COUNT(writing_queue));
         
         int free_slots = count_free_slots();
+        rec_log_peak_used = MAX(rec_log_peak_used, valid_slot_count - free_slots);
         
         /* if we are about to overflow, save a smaller number of frames, so they can be freed quicker */
         if (measured_write_speed)
@@ -3922,7 +3971,11 @@ abort_and_check_early_stop:
 
 cleanup:
     if (f) finish_chunk(f);
-    if (!written_total)
+    if (written_total)
+    {
+        rec_log_write(buffer_full ? "buffer_full" : !f ? "card_full" : "user");
+    }
+    else
     {
         FIO_RemoveFile(raw_movie_filename);
         raw_movie_filename = 0;
