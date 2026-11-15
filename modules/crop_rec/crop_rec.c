@@ -5797,6 +5797,17 @@ static const char * gain_value(int iso)
     return iso ? lens_format_iso(lens_info.raw_iso) : lens_format_aperture(lens_info.raw_aperture);
 }
 
+/* feedback goes to the bottom bar (gain_mode_update), not a box over the image */
+static char gain_flash[24];
+static int gain_flash_until;
+
+static void gain_show(const char * value, const char * suffix)
+{
+    snprintf(gain_flash, sizeof(gain_flash), "%s%s%s", value, suffix[0] ? " " : "", suffix);
+    gain_flash_until = get_ms_clock() + 1500;
+    BMP_LOCK( draw_ml_bottombar(); )
+}
+
 static void gain_apply(uint32_t req)
 {
     /* priv = -1: clamp at the ends instead of wrapping around or going to auto ISO */
@@ -5817,7 +5828,7 @@ static void gain_apply(uint32_t req)
             aperture_toggle((void*)-1, lens_info.raw_aperture < 0x30 ? -1 : -2);
             break;
     }
-    NotifyBox(1000, "%s", gain_value(req <= GAIN_ISO_DOWN));
+    gain_show(gain_value(req <= GAIN_ISO_DOWN), "");
 }
 
 static void gain_task()
@@ -5854,13 +5865,13 @@ static int gain_request(uint32_t req)
         int next = COERCE(base + (up ? 8 : -8), 0x48, 0x78);
         if (next == base)
         {
-            NotifyBox(1000, "%s %s", lens_format_iso(base), up ? "max" : "min");
+            gain_show(lens_format_iso(base), up ? "max" : "min");
             return 0;
         }
         target = next;
         target_ms = get_ms_clock();
         prop_request_change(PROP_ISO, &target, 4);
-        NotifyBox(1000, "%s", lens_format_iso(target));
+        gain_show(lens_format_iso(target), "");
         return 0;
     }
 
@@ -5871,11 +5882,11 @@ static int gain_request(uint32_t req)
 
     if (at_limit)
     {
-        NotifyBox(1000, "%s %s", gain_value(iso), up ? "max" : "min");
+        gain_show(gain_value(iso), up ? "max" : "min");
         return 0;
     }
 
-    NotifyBox(1000, "%s %s", gain_value(iso), up ? "+" : "-");
+    gain_show(gain_value(iso), up ? "+" : "-");
     msg_queue_post(gain_mq, req);
     return 0;
 }
@@ -6510,7 +6521,7 @@ if (get_halfshutter_pressed() && CROP_PRESET_MENU == CROP_PRESET_Anamorphic_EOSM
 
         info_switch_off = 1;
         info_switch = !info_switch;
-        NotifyBox(1000, info_switch ? "Up/Down: aperture" : "Up/Down: ISO");
+        gain_show(info_switch ? "Av" : "ISO", "");
         return 0;
     }
 
@@ -7851,9 +7862,21 @@ LVINFO_UPDATE_FUNC(mode_update)
 /* which value Up/Down change in INFO_switch / SET_switch mode */
 static LVINFO_UPDATE_FUNC(gain_mode_update)
 {
-    LVINFO_BUFFER(8);
+    LVINFO_BUFFER(24);
+
+    /* just changed: show the value, highlighted */
+    if (get_ms_clock() < gain_flash_until)
+    {
+        snprintf(buffer, sizeof(buffer), "%s", gain_flash);
+        item->color_fg = COLOR_BLACK;
+        item->color_bg = COLOR_ORANGE;
+        return;
+    }
+
+    /* otherwise a quiet tag for what Up/Down change */
     if (gain_buttons != 3 && gain_buttons != 4) return;
-    snprintf(buffer, sizeof(buffer), info_switch ? "[Av]" : "[ISO]");
+    snprintf(buffer, sizeof(buffer), info_switch ? "Av" : "ISO");
+    item->color_fg = COLOR_ORANGE;
 }
 
 static struct lvinfo_item info_items[] = {
