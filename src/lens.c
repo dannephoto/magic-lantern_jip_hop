@@ -2844,6 +2844,7 @@ static void lvinfo_gain_style(struct lvinfo_item * item, int which)
     {
         item->color_fg = COLOR_BLACK;
         item->color_bg = lvinfo_gain_flash_color;
+        lens_display_set_dirty();   /* keep redrawing so the flash ends on time */
     }
     else if (lvinfo_gain_target == which)
     {

@@ -69,7 +69,7 @@ static CONFIG_INT("crop.HDR_iso_b", HDR_iso_b, 0);
 static CONFIG_INT("crop.isoauto", isoauto, 0);
 static CONFIG_INT("crop.gain_buttons", gain_buttons, 3);
 static CONFIG_INT("crop.presets", presets, 0);
-static CONFIG_INT("crop.previews", previews, 2);
+static CONFIG_INT("crop.previews", previews, 0);
 static CONFIG_INT("crop.tapdisp", tapdisp, 0);
 static CONFIG_INT("crop.set", set, 0);
 
@@ -5827,11 +5827,11 @@ static void gain_apply(uint32_t req)
     {
         case GAIN_ISO_UP:
             if (lens_info.raw_iso == 0x0 || lens_info.raw_iso >= 0x78) return;
-            iso_toggle((void*)-1, 2);
+            lens_set_rawiso(MIN(lens_info.raw_iso + 8, 0x78));     /* expo override: BV path */
             break;
         case GAIN_ISO_DOWN:
             if (lens_info.raw_iso == 0x0 || lens_info.raw_iso <= 0x48) return;
-            iso_toggle((void*)-1, -2);
+            lens_set_rawiso(MAX(lens_info.raw_iso - 8, 0x48));
             break;
         case GAIN_AP_UP:
             aperture_toggle((void*)-1, lens_info.raw_aperture > 0x4a ? 1 : 2);
@@ -5879,7 +5879,7 @@ static int gain_request(uint32_t req)
         static int target, target_ms;
         int base = (target && get_ms_clock() - target_ms < 500) ? target : lens_info.raw_iso;
         int next = COERCE(base + (up ? 8 : -8), 0x48, 0x78);
-        if (next == base)
+        if (up ? next <= base : next >= base)
         {
             gain_show(HL_ISO, 1);
             return 0;
@@ -5923,7 +5923,7 @@ static int shutter_request(int up)
     static int target, target_ms;
     int base = (target && get_ms_clock() - target_ms < 500) ? target : lens_info.raw_shutter;
     int next = COERCE(shutter_third_step(base, up), SHUTTER_1_25, SHUTTER_1_4000);
-    if (next == base)
+    if (up ? next <= base : next >= base)
     {
         gain_show(HL_TV, 1);
         return 0;
@@ -6478,8 +6478,7 @@ if (get_halfshutter_pressed() && CROP_PRESET_MENU == CROP_PRESET_Anamorphic_EOSM
                 CROP_PRESET_MENU = CROP_PRESET_Anamorphic_EOSM_frtp;
                 anacrop4 = 0;
             }
-            PauseLiveView();
-            ResumeLiveView();
+            /* LiveView is restarted once below for both directions */
         }
         else
         {
@@ -6909,7 +6908,7 @@ static int crop_rec_needs_lv_refresh()
             zoomaid = 0x1;
             gain_buttons = 3;
             shutter_range = 0;
-            previews = 2;
+            previews = 0;   /* INFO is taken by gain = INFO_switch */
             tapdisp = 0;
             set = 0;
             isoauto = 0;
@@ -7611,11 +7610,22 @@ static unsigned int crop_rec_polling_cbr(unsigned int unused)
         msleep(200);
     }
 
+    /* reset cropmarks 1.5 s after recording / the menu ends, without blocking
+     * the shoot task meanwhile (that stalled focus aid and other shoot-task work) */
+    static int bvramhack_since = 0;
     if (!RECORDING && bvramhack && !gui_menu_shown())
     {
-        msleep(1500);
-        reset_movie_cropmarks();
-        bvramhack = 0;
+        if (!bvramhack_since) bvramhack_since = get_ms_clock();
+        if (get_ms_clock() - bvramhack_since >= 1500)
+        {
+            reset_movie_cropmarks();
+            bvramhack = 0;
+            bvramhack_since = 0;
+        }
+    }
+    else
+    {
+        bvramhack_since = 0;
     }
 
     return CBR_RET_CONTINUE;

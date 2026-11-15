@@ -1654,6 +1654,10 @@ static unsigned int silent_pic_polling_cbr(unsigned int ctx)
     if (!silent_pic_enabled)
         return 0;
 
+    /* never grab a silent picture in the middle of a clip (RAW recording needs the memory and CPU) */
+    if (RECORDING)
+        return 0;
+
     /* fullres silent pics only work in M mode, 
      * and they may screw up things if triggered while recording. */
     if (silent_pic_mode == SILENT_PIC_MODE_FULLRES && (shooting_mode != SHOOTMODE_M || is_movie_mode()))

@@ -5594,9 +5594,18 @@ menu_task( void* unused )
                     continue;
                 }
 
-                /* redraw either periodically (every 500ms),
-                 * or on request (menu_damage) */
-                if ((!menu_help_active && !menu_lv_transparent_mode) || menu_damage) {
+                /* redraw on request (menu_damage); key presses redraw right away anyway.
+                 * Live values (temperature, card space...) are refreshed every 2 s,
+                 * not every 500 ms, to leave the CPU alone while browsing. */
+                static int idle_ticks = 0;
+                if (menu_damage)
+                {
+                    idle_ticks = 0;
+                    menu_redraw();
+                }
+                else if (!menu_help_active && !menu_lv_transparent_mode && ++idle_ticks >= 4)
+                {
+                    idle_ticks = 0;
                     menu_redraw();
                 }
             }

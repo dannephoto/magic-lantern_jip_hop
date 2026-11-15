@@ -331,7 +331,7 @@ static unsigned int isoless_refresh(unsigned int ctx)
     if (!isoless_hdr) enabled_lv2 = 0;
     
     //Hack to preview base iso while not recording but apply scanlines when in framing mode //enabled_lv needed or cache problems
-    if ((enabled_lv && !RECORDING && preview_mode == 1) || (lv_dispsize == 10) || (enabled_lv && setting_changed) || (enabled_lv && !RECORDING && preview_mode != 1 && get_halfshutter_pressed()))
+    if ((enabled_lv && !RECORDING && preview_mode == 1) || (enabled_lv && lv_dispsize == 10) || (enabled_lv && setting_changed) || (enabled_lv && !RECORDING && preview_mode != 1 && get_halfshutter_pressed()))
     {
         isoless_disable(FRAME_CMOS_ISO_START, FRAME_CMOS_ISO_SIZE, FRAME_CMOS_ISO_COUNT, backup_lv);
         enabled_lv = 0;

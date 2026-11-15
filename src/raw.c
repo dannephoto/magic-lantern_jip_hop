@@ -2027,17 +2027,25 @@ static void FAST raw_preview_color_work(void* raw_buffer, void* lv_buffer, int y
     }
 
     /* white balance 2,1,2 => use two gamma curves to simplify code */
-    uint8_t gamma_rb[1024];
-    uint8_t gamma_g[1024];
+    /* raw_to_ev is soft-float log2f (no FPU): rebuild only when the levels change */
+    static uint8_t gamma_rb[1024];
+    static uint8_t gamma_g[1024];
+    static int gamma_black = -1, gamma_white = -1;
 
-    for (int i = 0; i < 1024; i++)
+    if (black != gamma_black || white != gamma_white)
     {
-        /* only show 10 bits */
-        int g_rb = COERCE(raw_to_ev((i << div) + black) + 11, 0, 10) * 255 / 10;
-        int g_g  = COERCE(raw_to_ev((i << div) + black) + 10, 0, 10) * 255 / 10;
-        /* gamma 2 */
-        gamma_rb[i] = COERCE(g_rb * g_rb / 255, 0, 255);
-        gamma_g[i]  = COERCE(g_g  * g_g  / 255, 0, 255);
+        for (int i = 0; i < 1024; i++)
+        {
+            /* only show 10 bits */
+            float ev = raw_to_ev((i << div) + black);
+            int g_rb = COERCE(ev + 11, 0, 10) * 255 / 10;
+            int g_g  = COERCE(ev + 10, 0, 10) * 255 / 10;
+            /* gamma 2 */
+            gamma_rb[i] = COERCE(g_rb * g_rb / 255, 0, 255);
+            gamma_g[i]  = COERCE(g_g  * g_g  / 255, 0, 255);
+        }
+        gamma_black = black;
+        gamma_white = white;
     }
     
     int x1 = COERCE(RAW2LV_X(preview_rect_x), 0, vram_lv.width);
@@ -2147,13 +2155,20 @@ static void FAST raw_preview_fast_work(void* raw_buffer, void* lv_buffer, int y1
         div++;
     }
 
-    uint8_t gamma[1024];
-    
-    for (int i = 0; i < 1024; i++)
+    /* raw_to_ev is soft-float log2f (no FPU): rebuild only when the levels change */
+    static uint8_t gamma[1024];
+    static int gamma_black = -1, gamma_white = -1;
+
+    if (black != gamma_black || white != gamma_white)
     {
-        /* only show 10 bits */
-        int g = COERCE(raw_to_ev((i << div) + black) + 10, 0, 10) * 255 / 10;
-        gamma[i] = g * g / 255; /* gamma 2 */
+        for (int i = 0; i < 1024; i++)
+        {
+            /* only show 10 bits */
+            int g = COERCE(raw_to_ev((i << div) + black) + 10, 0, 10) * 255 / 10;
+            gamma[i] = g * g / 255; /* gamma 2 */
+        }
+        gamma_black = black;
+        gamma_white = white;
     }
     
     int x1 = COERCE(RAW2LV_X(preview_rect_x), 0, vram_lv.width);

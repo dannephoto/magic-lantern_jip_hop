@@ -160,7 +160,6 @@ static CONFIG_INT("raw.movie_restart", movie_restart, 0);
 CONFIG_INT("raw.CropRecPreview", prevmode, 1);
 
 CONFIG_INT("raw.preview", preview_mode, 1);
-static CONFIG_INT("raw.rec_preview_color", rec_preview_color, 0);
 #define PREVIEW_AUTO   (preview_mode == 0)
 #define PREVIEW_CANON  (preview_mode == 1)
 #define PREVIEW_ML     (preview_mode == 2)
@@ -2972,8 +2971,11 @@ void process_frame(int next_fullsize_buffer_pos)
         {
             /* send it for saving, even if it isn't done yet */
             /* (the recording thread will wait until it's done) */
+            /* the audio task (mlv_rec_release_slot) appends too; keep the two lines atomic */
+            uint32_t old_int = cli();
             writing_queue[writing_queue_tail] = capture_slot;
             INC_MOD(writing_queue_tail, COUNT(writing_queue));
+            sei(old_int);
         }
     }
     else
@@ -3312,11 +3314,13 @@ static REQUIRES(RawRecTask)
 int write_frames(FILE** pf, void* ptr, int group_size, int num_frames)
 {
     FILE* f = *pf;
+    if (!f) return 0;   /* previous chunk was closed and no new one could be created */
     
     /* if we know there's a 4GB file size limit and we're about to exceed it, go ahead and make a new chunk */
     if (file_size_limit && written_chunk + group_size > 0xFFFFFFFF)
     {
         finish_chunk(f);
+        *pf = NULL;     /* f is closed now; don't let the caller touch it again */
         chunk_filename = get_next_chunk_file_name(raw_movie_filename, ++mlv_chunk);
         printf("About to reach 4GB limit.\n");
         printf("Creating new chunk: %s\n", chunk_filename);
@@ -3374,6 +3378,7 @@ int write_frames(FILE** pf, void* ptr, int group_size, int num_frames)
         }
         
         finish_chunk(f);
+        *pf = NULL;     /* f is closed now; don't let the caller touch it again */
         /* try to create a new chunk */
         chunk_filename = get_next_chunk_file_name(raw_movie_filename, ++mlv_chunk);
         printf("Creating new chunk: %s\n", chunk_filename);
@@ -3657,7 +3662,8 @@ void raw_video_rec_task()
             int overflow_time = free_slots * 1000 * 10 / fps;
             /* better underestimate write speed a little */
             int avg_frame_size = group_size / num_frames;
-            int frame_limit = overflow_time * 1024 / 10 * (measured_write_speed * 85 / 1000) * 1024 / avg_frame_size / 10;
+            /* 64-bit: the 32-bit product overflowed with many free slots and small frames */
+            int frame_limit = (int)((int64_t) overflow_time * 1024 / 10 * (measured_write_speed * 85 / 1000) * 1024 / avg_frame_size / 10);
             if (frame_limit >= 0 && frame_limit < num_frames)
             {
                 //printf("will overflow in %d.%d seconds; writing %d/%d frames\n", overflow_time/10, overflow_time%10, frame_limit, num_frames);
@@ -4079,15 +4085,6 @@ static struct menu_entry raw_video_menu[] =
                 .help2 = "Auto mode OFF\n"
                          "Auto mode ON\n"
                          "Framing/recording, Real time when in idle, crop modes\n",
-            },
-            {
-                .name = "Rec preview",
-                .priv = &rec_preview_color,
-                .max = 1,
-                .choices = CHOICES("Gray (fastest)", "Color (more CPU)"),
-                .help  = "Look of the ML (Framing) preview while recording.",
-                .help2 = "Gray: low-res grayscale, lightest on the CPU.\n"
-                         "Color: may drop frames at high data rates; gray when buffer fills.\n",
             },
             {
                 .name = "Kill global draw",
@@ -4629,7 +4626,7 @@ unsigned int raw_rec_update_preview(unsigned int ctx)
         -1,
         (need_for_speed) 
 	? RAW_PREVIEW_GRAY_ULTRA_FAST
-	: (RAW_IS_RECORDING && rec_trigger != 3 && !rec_preview_color) || (rec_trigger == 3 && get_halfshutter_pressed()) ? RAW_PREVIEW_GRAY_ULTRA_FAST /* 1x3 binning mode test */
+	: (RAW_IS_RECORDING && rec_trigger != 3) || (rec_trigger == 3 && get_halfshutter_pressed()) ? RAW_PREVIEW_GRAY_ULTRA_FAST /* 1x3 binning mode test */
     : RAW_PREVIEW_COLOR_HALFRES
     );
 
@@ -4758,7 +4755,6 @@ MODULE_CBRS_END()
 
 MODULE_CONFIGS_START()
     MODULE_CONFIG(kill_gd)
-    MODULE_CONFIG(rec_preview_color)
     MODULE_CONFIG(raw_video_enabled)
     MODULE_CONFIG(resolution_index_x)
     MODULE_CONFIG(res_x_fine)    
