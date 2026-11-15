@@ -23,6 +23,7 @@ extern WEAK_FUNC(ret_0) unsigned int movie_crop_hack_disable();
 extern WEAK_FUNC(ret_0) void aperture_toggle(void* priv, int sign);
 extern WEAK_FUNC(ret_0) void iso_toggle(void* priv, int sign);
 extern WEAK_FUNC(ret_0) void shutter_toggle(void* priv, int sign);
+extern int liveview_display_idle();
 
 int dual_iso_is_enabled();
 
@@ -5788,29 +5789,32 @@ static struct menu_entry crop_rec_menu[] =
 
 /* gain shortcuts: iso/aperture_toggle block while Canon confirms the change,
  * so run them in gain_task instead of the keypress CBR (GUI task) */
-enum { GAIN_ISO_UP = 1, GAIN_ISO_DOWN, GAIN_AP_UP, GAIN_AP_DOWN, GAIN_REDRAW };
+enum { GAIN_ISO_UP = 1, GAIN_ISO_DOWN, GAIN_AP_UP, GAIN_AP_DOWN, GAIN_REDRAW_ISO, GAIN_REDRAW_TV };
+enum { HL_ISO = 1, HL_AV, HL_TV };   /* bottom-bar items in lens.c */
 static struct msg_queue * gain_mq;
 static int info_switch = 0;     /* INFO_switch / SET_switch: 0 = Up/Down ISO, 1 = aperture */
 
-/* feedback: highlight the ISO / aperture value already on the bottom bar (lens.c),
- * instead of a box over the image. Weak, so an older autoexec just shows nothing. */
-static int gain_dummy_target, gain_dummy_until, gain_dummy_color;
+/* feedback: highlight the ISO / aperture / shutter values already on the bottom bar
+ * (lens.c) instead of a box over the image. Weak, so an older autoexec shows nothing. */
+static int gain_dummy_target, gain_dummy_item, gain_dummy_until, gain_dummy_color;
 extern int WEAK_FUNC(gain_dummy_target) lvinfo_gain_target;
+extern int WEAK_FUNC(gain_dummy_item) lvinfo_gain_flash_item;
 extern int WEAK_FUNC(gain_dummy_until) lvinfo_gain_flash_until;
 extern int WEAK_FUNC(gain_dummy_color) lvinfo_gain_flash_color;
 
-/* 1 = ISO, 2 = aperture, 0 = Up/Down not assigned */
+/* what Up/Down change; 0 = not assigned */
 static int gain_target()
 {
-    if (gain_buttons == 1) return 1;
-    if (gain_buttons == 2) return 2;
-    if (gain_buttons == 3 || gain_buttons == 4) return info_switch ? 2 : 1;
+    if (gain_buttons == 1) return HL_ISO;
+    if (gain_buttons == 2) return HL_AV;
+    if (gain_buttons == 3 || gain_buttons == 4) return info_switch ? HL_AV : HL_ISO;
     return 0;
 }
 
-static void gain_show(int limit)
+static void gain_show(int item, int limit)
 {
     lvinfo_gain_target = gain_target();
+    lvinfo_gain_flash_item = item;
     lvinfo_gain_flash_color = limit ? COLOR_RED : COLOR_ORANGE;
     lvinfo_gain_flash_until = get_ms_clock() + 1500;
     BMP_LOCK( draw_ml_bottombar(); )
@@ -5835,11 +5839,12 @@ static void gain_apply(uint32_t req)
         case GAIN_AP_DOWN:
             aperture_toggle((void*)-1, lens_info.raw_aperture < 0x30 ? -1 : -2);
             break;
-        case GAIN_REDRAW:
-            msleep(100);    /* let the ISO property settle, then show the new value */
+        case GAIN_REDRAW_ISO:
+        case GAIN_REDRAW_TV:
+            msleep(100);    /* let the property settle, then show the new value */
             break;
     }
-    gain_show(0);
+    gain_show(req == GAIN_REDRAW_TV ? HL_TV : (req == GAIN_ISO_UP || req == GAIN_ISO_DOWN || req == GAIN_REDRAW_ISO) ? HL_ISO : HL_AV, 0);
 }
 
 static void gain_task()
@@ -5876,14 +5881,14 @@ static int gain_request(uint32_t req)
         int next = COERCE(base + (up ? 8 : -8), 0x48, 0x78);
         if (next == base)
         {
-            gain_show(1);
+            gain_show(HL_ISO, 1);
             return 0;
         }
         target = next;
         target_ms = get_ms_clock();
         prop_request_change(PROP_ISO, &target, 4);
-        gain_show(0);
-        msg_queue_post(gain_mq, GAIN_REDRAW);
+        gain_show(HL_ISO, 0);
+        msg_queue_post(gain_mq, GAIN_REDRAW_ISO);
         return 0;
     }
 
@@ -5894,12 +5899,40 @@ static int gain_request(uint32_t req)
 
     if (at_limit)
     {
-        gain_show(1);
+        gain_show(iso ? HL_ISO : HL_AV, 1);
         return 0;
     }
 
-    gain_show(0);
+    gain_show(iso ? HL_ISO : HL_AV, 0);
     msg_queue_post(gain_mq, req);
+    return 0;
+}
+
+/* next Canon 1/3-stop shutter code: offsets 0, 3, 5 within each stop of 8 */
+static int shutter_third_step(int raw, int up)
+{
+    int base = raw & ~7, o = raw & 7;
+    if (up) return o < 3 ? base + 3 : o < 5 ? base + 5 : base + 8;
+    return o > 5 ? base + 5 : o > 3 ? base + 3 : o > 0 ? base : base - 3;
+}
+
+/* main dial: request the next 1/3 stop directly, like the ISO shortcut,
+ * instead of Canon's dial handling, which lags badly in crop modes */
+static int shutter_request(int up)
+{
+    static int target, target_ms;
+    int base = (target && get_ms_clock() - target_ms < 500) ? target : lens_info.raw_shutter;
+    int next = COERCE(shutter_third_step(base, up), SHUTTER_1_25, SHUTTER_1_4000);
+    if (next == base)
+    {
+        gain_show(HL_TV, 1);
+        return 0;
+    }
+    target = next;
+    target_ms = get_ms_clock();
+    prop_request_change(PROP_SHUTTER, &target, 4);
+    gain_show(HL_TV, 0);
+    msg_queue_post(gain_mq, GAIN_REDRAW_TV);
     return 0;
 }
 
@@ -6524,6 +6557,12 @@ if (get_halfshutter_pressed() && CROP_PRESET_MENU == CROP_PRESET_Anamorphic_EOSM
     }
 
     static int info_switch_off = 0;
+
+    if ((key == MODULE_KEY_WHEEL_LEFT || key == MODULE_KEY_WHEEL_RIGHT) && gain_buttons &&
+        lv && liveview_display_idle() && is_movie_mode() && lens_info.raw_shutter && !expo_override_active())
+    {
+        return shutter_request(key == MODULE_KEY_WHEEL_RIGHT);
+    }
     if ((key == MODULE_KEY_INFO || key == MODULE_KEY_PRESS_SET) && lv && !gui_menu_shown() && is_movie_mode() && (gain_buttons == 3 || gain_buttons == 4))
     {
         if(lv_disp_mode != 0){
@@ -6533,7 +6572,7 @@ if (get_halfshutter_pressed() && CROP_PRESET_MENU == CROP_PRESET_Anamorphic_EOSM
 
         info_switch_off = 1;
         info_switch = !info_switch;
-        gain_show(0);
+        gain_show(gain_target(), 0);
         return 0;
     }
 
