@@ -2828,6 +2828,28 @@ static LVINFO_UPDATE_FUNC(is_update)
     }
 }
 
+/* Up/Down exposure shortcuts (crop_rec "gain"): which bottom-bar value they change.
+ * The active value is drawn in orange; right after a change it flashes with a
+ * filled background (orange, or red at a limit) until lvinfo_gain_flash_until. */
+int lvinfo_gain_target = 0;         /* 0 = none, 1 = ISO, 2 = aperture */
+int lvinfo_gain_flash_until = 0;    /* get_ms_clock() timestamp */
+int lvinfo_gain_flash_color = COLOR_ORANGE;
+
+static void lvinfo_gain_style(struct lvinfo_item * item, int target)
+{
+    if (lvinfo_gain_target != target) return;
+
+    if (get_ms_clock() < lvinfo_gain_flash_until)
+    {
+        item->color_fg = COLOR_BLACK;
+        item->color_bg = lvinfo_gain_flash_color;
+    }
+    else
+    {
+        item->color_fg = COLOR_ORANGE;
+    }
+}
+
 static LVINFO_UPDATE_FUNC(av_update)
 {
     LVINFO_BUFFER(8);
@@ -2842,6 +2864,8 @@ static LVINFO_UPDATE_FUNC(av_update)
         /* mark the "exposure override" mode */
         item->color_bg = 18;
     }
+
+    lvinfo_gain_style(item, 2);
 }
 
 static LVINFO_UPDATE_FUNC(tv_update)
@@ -2981,6 +3005,8 @@ static LVINFO_UPDATE_FUNC(iso_update)
         /* mark the "exposure override" mode */
         item->color_bg = 18;
     }
+
+    lvinfo_gain_style(item, 1);
 }
 
 static LVINFO_UPDATE_FUNC(wb_update)

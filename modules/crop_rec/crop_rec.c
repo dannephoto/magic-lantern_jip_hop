@@ -5788,23 +5788,31 @@ static struct menu_entry crop_rec_menu[] =
 
 /* gain shortcuts: iso/aperture_toggle block while Canon confirms the change,
  * so run them in gain_task instead of the keypress CBR (GUI task) */
-enum { GAIN_ISO_UP = 1, GAIN_ISO_DOWN, GAIN_AP_UP, GAIN_AP_DOWN };
+enum { GAIN_ISO_UP = 1, GAIN_ISO_DOWN, GAIN_AP_UP, GAIN_AP_DOWN, GAIN_REDRAW };
 static struct msg_queue * gain_mq;
 static int info_switch = 0;     /* INFO_switch / SET_switch: 0 = Up/Down ISO, 1 = aperture */
 
-static const char * gain_value(int iso)
+/* feedback: highlight the ISO / aperture value already on the bottom bar (lens.c),
+ * instead of a box over the image. Weak, so an older autoexec just shows nothing. */
+static int gain_dummy_target, gain_dummy_until, gain_dummy_color;
+extern int WEAK_FUNC(gain_dummy_target) lvinfo_gain_target;
+extern int WEAK_FUNC(gain_dummy_until) lvinfo_gain_flash_until;
+extern int WEAK_FUNC(gain_dummy_color) lvinfo_gain_flash_color;
+
+/* 1 = ISO, 2 = aperture, 0 = Up/Down not assigned */
+static int gain_target()
 {
-    return iso ? lens_format_iso(lens_info.raw_iso) : lens_format_aperture(lens_info.raw_aperture);
+    if (gain_buttons == 1) return 1;
+    if (gain_buttons == 2) return 2;
+    if (gain_buttons == 3 || gain_buttons == 4) return info_switch ? 2 : 1;
+    return 0;
 }
 
-/* feedback goes to the bottom bar (gain_mode_update), not a box over the image */
-static char gain_flash[24];
-static int gain_flash_until;
-
-static void gain_show(const char * value, const char * suffix)
+static void gain_show(int limit)
 {
-    snprintf(gain_flash, sizeof(gain_flash), "%s%s%s", value, suffix[0] ? " " : "", suffix);
-    gain_flash_until = get_ms_clock() + 1500;
+    lvinfo_gain_target = gain_target();
+    lvinfo_gain_flash_color = limit ? COLOR_RED : COLOR_ORANGE;
+    lvinfo_gain_flash_until = get_ms_clock() + 1500;
     BMP_LOCK( draw_ml_bottombar(); )
 }
 
@@ -5827,8 +5835,11 @@ static void gain_apply(uint32_t req)
         case GAIN_AP_DOWN:
             aperture_toggle((void*)-1, lens_info.raw_aperture < 0x30 ? -1 : -2);
             break;
+        case GAIN_REDRAW:
+            msleep(100);    /* let the ISO property settle, then show the new value */
+            break;
     }
-    gain_show(gain_value(req <= GAIN_ISO_DOWN), "");
+    gain_show(0);
 }
 
 static void gain_task()
@@ -5865,13 +5876,14 @@ static int gain_request(uint32_t req)
         int next = COERCE(base + (up ? 8 : -8), 0x48, 0x78);
         if (next == base)
         {
-            gain_show(lens_format_iso(base), up ? "max" : "min");
+            gain_show(1);
             return 0;
         }
         target = next;
         target_ms = get_ms_clock();
         prop_request_change(PROP_ISO, &target, 4);
-        gain_show(lens_format_iso(target), "");
+        gain_show(0);
+        msg_queue_post(gain_mq, GAIN_REDRAW);
         return 0;
     }
 
@@ -5882,11 +5894,11 @@ static int gain_request(uint32_t req)
 
     if (at_limit)
     {
-        gain_show(gain_value(iso), up ? "max" : "min");
+        gain_show(1);
         return 0;
     }
 
-    gain_show(gain_value(iso), up ? "+" : "-");
+    gain_show(0);
     msg_queue_post(gain_mq, req);
     return 0;
 }
@@ -6521,7 +6533,7 @@ if (get_halfshutter_pressed() && CROP_PRESET_MENU == CROP_PRESET_Anamorphic_EOSM
 
         info_switch_off = 1;
         info_switch = !info_switch;
-        gain_show(info_switch ? "Av" : "ISO", "");
+        gain_show(0);
         return 0;
     }
 
@@ -7081,6 +7093,8 @@ static void set_zoom(int zoom)
 /* when closing ML menu, check whether we need to refresh the LiveView */
 static unsigned int crop_rec_polling_cbr(unsigned int unused)
 {
+    lvinfo_gain_target = is_movie_mode() ? gain_target() : 0;
+
     if (gremag && crop_preset_index != 13)
     {
         menu_set_str_value_from_script("White Balance", "WBShift G/M", "0", 1);
@@ -7859,34 +7873,7 @@ LVINFO_UPDATE_FUNC(mode_update)
     if (OUTPUT_12BIT) snprintf(buffer, sizeof(buffer), "12bit");
 }
 
-/* which value Up/Down change in INFO_switch / SET_switch mode */
-static LVINFO_UPDATE_FUNC(gain_mode_update)
-{
-    LVINFO_BUFFER(24);
-
-    /* just changed: show the value, highlighted */
-    if (get_ms_clock() < gain_flash_until)
-    {
-        snprintf(buffer, sizeof(buffer), "%s", gain_flash);
-        item->color_fg = COLOR_BLACK;
-        item->color_bg = COLOR_ORANGE;
-        return;
-    }
-
-    /* otherwise a quiet tag for what Up/Down change */
-    if (gain_buttons != 3 && gain_buttons != 4) return;
-    snprintf(buffer, sizeof(buffer), info_switch ? "Av" : "ISO");
-    item->color_fg = COLOR_ORANGE;
-}
-
 static struct lvinfo_item info_items[] = {
-    {
-        .name = "Up/Down mode",
-        .which_bar = LV_BOTTOM_BAR_ONLY,
-        .update = gain_mode_update,
-        .preferred_position = -60,
-        .priority = 1,
-    },
     {
         .name = "Crop info",
         .which_bar = LV_BOTTOM_BAR_ONLY,
