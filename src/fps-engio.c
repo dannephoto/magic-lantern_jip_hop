@@ -155,6 +155,11 @@ static inline int get_fps_override()
 
 static CONFIG_INT("fps.override.idx", fps_override_index, 10);
 
+/* "Only while REC": keep LiveView at Canon FPS, switch to the override when a raw recorder arms it */
+static CONFIG_INT("fps.rec.only", fps_rec_only, 1);
+static volatile int fps_rec_armed = 0;
+static int fps_override_applied = 0;
+
 // 1000 = zero, more is positive, less is negative
 static CONFIG_INT("fps.timerA.off", desired_fps_timer_a_offset, 0); // add this to default Canon value
 static CONFIG_INT("fps.timerB.off", desired_fps_timer_b_offset, 0); // add this to computed value (for fine tuning)
@@ -1413,6 +1418,15 @@ static struct menu_entry fps_menu[] = {
                 .help = "FPS value for recording. Video will play back at Canon FPS.",
             },
             {
+                .name = "Apply",
+                .priv = &fps_rec_only,
+                .max = 1,
+                .choices = (const char *[]) {"Always", "Only while REC"},
+                .help = "Only while REC: LiveView stays smooth, low FPS starts with raw recording.",
+                .help2 = "Preview brightness is at Canon FPS; low FPS records with longer exposure.",
+                .depends_on = DEP_MOVIE_MODE,
+            },
+            {
                 .name = "Optimize for",
                 .priv       = &fps_criteria,
                 .choices = (const char *[]) {
@@ -1673,6 +1687,28 @@ static void fps_disable_timers_evfstate()
 
 #endif
 
+/* Raw recorders call this before writing headers (on=1) and after stopping (on=0).
+ * With "Only while REC", on=1 waits until the sensor runs at the override FPS,
+ * so the clip and its metadata start at the requested rate. Returns 1 if armed. */
+int fps_rec_only_arm(int on)
+{
+    if (!on || !get_fps_override() || !fps_rec_only || !is_movie_mode())
+    {
+        fps_rec_armed = 0;
+        return 0;
+    }
+
+    fps_rec_armed = 1;
+    int target = fps_values_x1000[fps_override_index];
+    for (int i = 0; i < 40; i++)    /* fps_task applies it within ~100 ms; give up after 2 s */
+    {
+        int current = fps_get_current_x1000();
+        if (ABS(current - target) * 50 <= target) break;    /* within 2% */
+        msleep(50);
+    }
+    return 1;
+}
+
 // do all FPS changes from this task only - to avoid trouble ;)
 static void fps_task()
 {
@@ -1712,11 +1748,21 @@ static void fps_task()
         
         //~ NotifyBox(2000, "d: %d,%d. c: %d,%d ", fps_timer_a_orig, fps_timer_b_orig, fps_timer_a, fps_timer_b);
         
-        if (!get_fps_override()) 
+        int fps_rec_gated = fps_rec_only && is_movie_mode() && !fps_rec_armed && NOT_RECORDING;
+
+        if (!get_fps_override() || fps_rec_gated) 
         {
             msleep(100);
 
-            if (!get_fps_override() && fps_needs_updating)
+            if (fps_rec_gated && get_fps_override() && fps_override_applied)
+            {
+                /* recording ended: back to Canon FPS for a smooth preview */
+                fps_override_applied = 0;
+                fps_reset();
+                fps_read_current_timer_values();
+                fps_read_default_timer_values();
+            }
+            else if (!get_fps_override() && fps_needs_updating)
             {
                 fps_reset();
                 fps_read_current_timer_values();
@@ -1781,7 +1827,7 @@ static void fps_task()
         
         // Very low FPS: first few frames will be recorded at normal FPS, to bypass Canon's internal checks
         if (f < 5000)
-            while (RECORDING && MVR_FRAME_NUMBER < video_mode_fps)
+            while (RECORDING_H264 && MVR_FRAME_NUMBER < video_mode_fps) /* Canon's H.264 checks only; raw has no MVR frames */
                 msleep(MIN_MSLEEP);
 
         // on new cameras, timer B may be changed back and forth, e.g. EOS M: 2527/2528 for 24p
@@ -1810,6 +1856,7 @@ static void fps_task()
         //~ info_led_on();
         fps_setup_timerA(f);
         fps_setup_timerB(f);
+        fps_override_applied = 1;
         //~ info_led_off();
         fps_read_current_timer_values();
         //~ bmp_printf(FONT_LARGE, 50, 100, "%dx, new timers: %d,%d ", lv_dispsize, fps_timer_a, fps_timer_b);

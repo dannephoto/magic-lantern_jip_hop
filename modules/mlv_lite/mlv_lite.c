@@ -86,6 +86,7 @@ static GUARDED_BY(GuiMainTask) int show_edmac = 0;
 /* from mlv_play module */
 extern WEAK_FUNC(ret_0) void mlv_play_file(char *filename);
 extern WEAK_FUNC(ret_0) unsigned int movie_crop_hack_disable();
+extern WEAK_FUNC(ret_0) int fps_rec_only_arm(int on);
 
 //dummy enabler crop rec
 static int bits = 0; /* coming from crop_rec.c */
@@ -3541,6 +3542,9 @@ void raw_video_rec_task()
     /* disable Canon's powersaving (30 min in LiveView) */
     powersave_prohibit();
 
+    /* FPS override "Only while REC": switch the sensor to the low FPS now */
+    fps_rec_only_arm(1);
+
     /* wait for two frames to be sure everything is refreshed */
     wait_lv_frames(2);
     
@@ -4008,6 +4012,7 @@ cleanup:
     }
 
     ResumeLiveView();
+    fps_rec_only_arm(0);    /* back to smooth preview */
     redraw();
     raw_recording_state = RAW_IDLE;
 
